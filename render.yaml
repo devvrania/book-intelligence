@@ -1,0 +1,80 @@
+# Render Blueprint: one free web service running the Next.js app with its background worker in-process.
+# The database (Neon), file storage (Supabase Storage) and AI (Google Gemini) are external free services.
+# Values marked `sync: false` are secrets you paste in the Render dashboard. Step by step: DEPLOY.md.
+services:
+  - type: web
+    name: book-intelligence
+    runtime: node
+    plan: free
+    # --include=dev: NODE_ENV=production would otherwise skip devDependencies, which the build (TypeScript,
+    # Tailwind) and the migration script (tsx) need
+    buildCommand: npm ci --include=dev && npm run build
+    # Free instances have no pre-deploy step, so migrations run at start (they're idempotent).
+    startCommand: npm run db:migrate && npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # Free instances have 512 MB of memory; keep Node's heap below it.
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false # e.g. https://books.devvrania.com
+
+      # Database: Neon connection string (with ?sslmode=require)
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_POOL_MAX
+        value: "5"
+
+      # AI: Google Gemini through its OpenAI-compatible API
+      - key: AI_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false # your Gemini API key
+      - key: OPENAI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai/
+      - key: OPENAI_CHAT_MODEL
+        value: gemini-3.5-flash
+      - key: OPENAI_UTILITY_MODEL
+        value: gemini-3.1-flash-lite
+      # Gemini's thinking counts against the answer-length limit; "low" can leave short answers empty
+      - key: OPENAI_REASONING_EFFORT
+        value: minimal
+      - key: OPENAI_EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: EMBEDDING_BATCH_SIZE
+        value: "32"
+
+      # Storage: Supabase Storage through its S3-compatible API
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false # your Supabase project's region, e.g. ap-south-1
+      - key: S3_ENDPOINT
+        sync: false # https://<project-ref>.supabase.co/storage/v1/s3
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_FORCE_PATH_STYLE
+        value: "true"
+
+      # Uploads: keep PDFs modest on a small free instance
+      - key: MAX_UPLOAD_MB
+        value: "25"
+      - key: MAX_PDF_PAGES
+        value: "800"
+
+      # Public deployment guards: daily caps (inside Gemini's free quota) and no renaming/deleting by visitors
+      - key: RATE_LIMIT_CHAT_PER_DAY
+        value: "100"
+      - key: RATE_LIMIT_UPLOADS_PER_DAY
+        value: "5"
+      - key: NEXT_PUBLIC_ALLOW_BOOK_CHANGES
+        value: "false"
