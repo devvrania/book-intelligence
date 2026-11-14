@@ -91,10 +91,13 @@ const USER_MESSAGES: Record<AIErrorKind, string> = {
 export class AIProviderError extends AppError {
   readonly kind: AIErrorKind;
   readonly retryable: boolean;
+  /** How long the provider asked us to wait before retrying, when it said (e.g. Gemini's "retry in 50s"). */
+  readonly retryAfterMs?: number;
 
-  constructor(kind: AIErrorKind, options: { message?: string; cause?: unknown } = {}) {
+  constructor(kind: AIErrorKind, options: { message?: string; cause?: unknown; retryAfterMs?: number } = {}) {
     super(`ai_${kind}`, kind === "context_length" ? 400 : 503, USER_MESSAGES[kind], options);
     this.kind = kind;
     this.retryable = kind === "rate_limit" || kind === "unavailable";
+    this.retryAfterMs = options.retryAfterMs;
   }
 }

@@ -18,10 +18,20 @@ export interface EmbeddingServiceOptions {
   /** Override the model's document / query prefixes ("none" disables). */
   documentPrefix?: string;
   queryPrefix?: string;
+  /**
+   * Token budget per embedding request. Must sit below a provider's per-minute limit, or a request can never succeed
+   * (Gemini's free tier allows 30,000 embedding tokens per minute). Default: 120,000 (OpenAI allows 300k per request).
+   */
+  maxTokensPerRequest?: number;
+  /** How long to wait before retrying a rate-limited batch when the provider doesn't say. Default 30 s. */
+  rateLimitWaitMs?: number;
+  /** How many times to wait out a rate limit for one batch before failing (0 = fail at once). Default 12. */
+  maxRateLimitWaits?: number;
 }
 
-/** Stay well under provider request limits (OpenAI: 300k tokens per request). */
-const MAX_TOKENS_PER_REQUEST = 120_000;
+const DEFAULT_MAX_TOKENS_PER_REQUEST = 120_000;
+/** Waits for one batch before giving up: a free per-minute quota clears in about a minute each time. */
+const DEFAULT_MAX_RATE_LIMIT_WAITS = 12;
 const QUERY_CACHE_SIZE = 500;
 
 /**
@@ -115,7 +125,7 @@ export class EmbeddingService {
     const flush = async () => {
       if (batch.length === 0) return;
       const started = performance.now();
-      const { embeddings, usage } = await this.provider.embed(batch, { ...options, inputType: "document" });
+      const { embeddings, usage } = await this.embedWithWaits(batch, options);
       logger.debug("embeddings.batch", {
         model: this.model,
         inputs: batch.length,
@@ -129,12 +139,33 @@ export class EmbeddingService {
 
     for (const input of inputs) {
       const tokens = countTokens(input);
-      if (batch.length >= this.provider.maxBatchSize || batchTokens + tokens > MAX_TOKENS_PER_REQUEST) await flush();
+      const maxTokens = this.options.maxTokensPerRequest ?? DEFAULT_MAX_TOKENS_PER_REQUEST;
+      if (batch.length >= this.provider.maxBatchSize || (batch.length > 0 && batchTokens + tokens > maxTokens)) await flush();
       batch.push(input);
       batchTokens += tokens;
     }
     await flush();
     return results;
+  }
+
+  /**
+   * Embed one batch, waiting out per-minute rate limits instead of failing: free tiers (e.g. Gemini's 30,000 tokens
+   * per minute) can't take a whole book at once, so a book is embedded about one budget per minute. Waits for as
+   * long as the provider asks ("retry in 50s"), up to `maxRateLimitWaits` times per batch.
+   */
+  private async embedWithWaits(batch: string[], options: { signal?: AbortSignal }) {
+    for (let waits = 0; ; waits++) {
+      try {
+        return await this.provider.embed(batch, { ...options, inputType: "document" });
+      } catch (error) {
+        const limited = error instanceof AIProviderError && error.kind === "rate_limit";
+        const maxWaits = this.options.maxRateLimitWaits ?? DEFAULT_MAX_RATE_LIMIT_WAITS;
+        if (!limited || waits >= maxWaits || options.signal?.aborted) throw error;
+        const waitMs = (error.retryAfterMs ?? this.options.rateLimitWaitMs ?? 30_000) + 1_000;
+        logger.warn("embeddings.rate_limited", { model: this.model, inputs: batch.length, waitMs, wait: waits + 1 });
+        await sleep(waitMs, options.signal);
+      }
+    }
   }
 
   async embedQuery(query: string, options: { signal?: AbortSignal } = {}): Promise<number[]> {
@@ -156,4 +187,14 @@ export class EmbeddingService {
     }
     return fitted;
   }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }, { once: true });
+  });
 }

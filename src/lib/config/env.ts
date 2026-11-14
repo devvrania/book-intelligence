@@ -50,6 +50,10 @@ const envSchema = z.object({
   OPENAI_EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
   EMBEDDING_BATCH_SIZE: z.coerce.number().int().min(1).max(2048).default(64),
+  /** Token budget per embedding request; keep it under a free tier's per-minute limit (Gemini: 30,000). */
+  EMBEDDING_MAX_TOKENS_PER_REQUEST: z.coerce.number().int().positive().optional(),
+  /** How many times to wait out a per-minute rate limit for one embedding batch before failing (0 = never wait). */
+  EMBEDDING_RATE_LIMIT_MAX_WAITS: z.coerce.number().int().min(0).default(12),
 
   // Storage
   STORAGE_PROVIDER: z.enum(["local", "s3"]).default("local"),

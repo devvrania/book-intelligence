@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { useBookMutations } from "@/features/books/api";
+import { allowBookChanges } from "@/lib/library/flags";
 import type { BookDetail } from "@/types/api";
 
 import { BookCover } from "./book-cover";
@@ -67,10 +68,12 @@ export function BookProcessingView({ book }: { book: BookDetail }) {
                   <RefreshCw />
                   Try again
                 </Button>
-                <Button variant="ghost" onClick={discard} disabled={remove.isPending} className="rounded-full text-muted-foreground">
-                  <Trash2 />
-                  Remove book
-                </Button>
+                {allowBookChanges && (
+                  <Button variant="ghost" onClick={discard} disabled={remove.isPending} className="rounded-full text-muted-foreground">
+                    <Trash2 />
+                    Remove book
+                  </Button>
+                )}
               </div>
             </div>
           ) : (

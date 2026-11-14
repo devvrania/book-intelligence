@@ -30,12 +30,7 @@ export function mapOpenAIError(error: unknown): AIProviderError {
   if (error instanceof OpenAI.APIError) {
     const message = error.message;
     if (error.status === 401 || error.status === 403) return new AIProviderError("auth", { cause: error, message });
-    if (error.status === 429) {
-      // Exhausted credits/quota is also a 429, but retrying won't help.
-      const code = (error as { code?: string | null }).code ?? "";
-      const outOfCredits = /quota|credit|billing/i.test(`${code} ${message}`);
-      return new AIProviderError(outOfCredits ? "quota" : "rate_limit", { cause: error, message });
-    }
+    if (error.status === 429) return classify429(error, message);
     if (error.status === 400 && /context length|maximum context|too many tokens/i.test(message)) {
       return new AIProviderError("context_length", { cause: error, message });
     }
@@ -48,6 +43,25 @@ export function mapOpenAIError(error: unknown): AIProviderError {
     cause: error,
     message: error instanceof Error ? error.message : String(error),
   });
+}
+
+/**
+ * A 429 is either "slow down" (retry soon) or "out of credits / used up for today" (retrying won't help).
+ * Free tiers blur the two: Gemini's per-minute limit says "You exceeded your current quota, please check your plan
+ * and billing details" and "Please retry in 50.8s". So per-minute limits are rate limits (with the suggested wait),
+ * daily limits and real billing problems are quota.
+ */
+function classify429(error: InstanceType<typeof OpenAI.APIError>, message: string): AIProviderError {
+  const code = (error as { code?: string | null }).code ?? "";
+  const text = `${code} ${message}`;
+  const header = error.headers?.get?.("retry-after");
+  const hinted = /retry in ([\d.]+)\s*s/i.exec(text)?.[1] ?? header ?? undefined;
+  const retryAfterMs = hinted && Number.isFinite(Number(hinted)) ? Math.ceil(Number(hinted) * 1000) : undefined;
+
+  if (/per ?day|PerDay/i.test(text)) return new AIProviderError("quota", { cause: error, message });
+  if (/per ?minute|PerMinute/i.test(text)) return new AIProviderError("rate_limit", { cause: error, message, retryAfterMs });
+  if (/insufficient_quota|credit|billing|quota/i.test(text)) return new AIProviderError("quota", { cause: error, message });
+  return new AIProviderError("rate_limit", { cause: error, message, retryAfterMs });
 }
 
 function toUsage(usage: OpenAI.Completions.CompletionUsage | null | undefined): TokenUsage | undefined {

@@ -60,6 +60,8 @@ export function createServices(overrides: ServiceOverrides = {}) {
     columnDimensions: VECTOR_DIMENSIONS,
     documentPrefix: env.EMBEDDING_DOCUMENT_PREFIX,
     queryPrefix: env.EMBEDDING_QUERY_PREFIX,
+    maxTokensPerRequest: env.EMBEDDING_MAX_TOKENS_PER_REQUEST,
+    maxRateLimitWaits: env.EMBEDDING_RATE_LIMIT_MAX_WAITS,
   });
   const retrievalConfig = {
     ...baseRetrieval,

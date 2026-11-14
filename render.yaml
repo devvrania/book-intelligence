@@ -48,6 +48,10 @@ services:
         value: gemini-embedding-001
       - key: EMBEDDING_BATCH_SIZE
         value: "32"
+      # Gemini's free tier allows 30,000 embedding tokens per minute; keep each request well under it.
+      # Larger books are embedded about one request per minute (the app waits out the limit).
+      - key: EMBEDDING_MAX_TOKENS_PER_REQUEST
+        value: "20000"
 
       # Storage: Supabase Storage through its S3-compatible API
       - key: STORAGE_PROVIDER
