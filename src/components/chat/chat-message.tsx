@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertCircle, Check, Copy, Quote, RotateCcw, Sparkles } from "lucide-react";
+import { AlertCircle, BookX, Check, Copy, Quote, RotateCcw, ShieldAlert, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 import { truncate } from "@/lib/documents/text-utils";
@@ -16,6 +16,7 @@ const STAGE_COPY = {
   understanding: "Understanding your question…",
   retrieving: "Searching the book…",
   generating: "Reading the passages…",
+  checking: "Checking the answer against the book…",
 } as const;
 
 export function UserMessage({ message }: { message: ChatMessageModel }) {
@@ -94,6 +95,8 @@ export function AssistantMessage({
           </>
         )}
 
+        {!isError && !message.streaming && <GroundingNote grounding={message.grounding} />}
+
         {!isError && !thinking && !message.streaming && message.sources.length > 0 && (
           <SourcesList sources={message.sources} onOpen={onOpenSource} compact={compact} />
         )}
@@ -113,6 +116,29 @@ export function AssistantMessage({
       </div>
     </motion.div>
   );
+}
+
+/**
+ * A small note under the answer when it isn't a normal cited answer: an honest "not in the book" refusal, or an
+ * answer the model gave without citations even after a retry (so the reader should check the passages).
+ */
+function GroundingNote({ grounding }: { grounding?: ChatMessageModel["grounding"] }) {
+  if (grounding === "not_in_book") {
+    return (
+      <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+        <BookX className="size-3.5" aria-hidden /> Not covered in this book
+      </p>
+    );
+  }
+  if (grounding === "uncited") {
+    return (
+      <p className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:text-amber-200">
+        <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+        This answer isn’t backed by citations, so it may include things the book doesn’t say. Check the passages below.
+      </p>
+    );
+  }
+  return null;
 }
 
 function ThinkingIndicator({ stage, sourceCount }: { stage: keyof typeof STAGE_COPY; sourceCount: number }) {

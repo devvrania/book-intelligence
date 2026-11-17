@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DocumentProcessor } from "@/lib/documents/document-processor";
-import { detectStructure } from "@/lib/documents/structure-detector";
+import { cleanAuthor, detectStructure } from "@/lib/documents/structure-detector";
 import { parseChapterHeading } from "@/lib/documents/structure-patterns";
 import { cleanDocument } from "@/lib/documents/text-cleaner";
 import { DocumentError, type ExtractedDocument, type PdfTextLine } from "@/lib/documents/types";
@@ -117,6 +117,32 @@ describe("structure detection", () => {
     const structure = detectStructure(cleanDocument(extracted), extracted);
     expect(structure.title).toBe("Metadata Title");
     expect(structure.author).toBe("Metadata Author");
+  });
+
+  it("strips catalogue codes that publishers pack into the author field", () => {
+    const extracted = doc([page(1, [{ text: BODY }])], { author: "Lewis Carroll; BkV0000010; BksIr0000001; ISBN<n/a>;" });
+    expect(detectStructure(cleanDocument(extracted), extracted).author).toBe("Lewis Carroll");
+  });
+
+  it("finds the author on a title page when the metadata has none", () => {
+    const gutenberg = doc([page(1, [{ text: "Title: The Adventures of Sherlock Holmes" }, { text: "Author: Arthur Conan Doyle" }, { text: BODY }])]);
+    expect(detectStructure(cleanDocument(gutenberg), gutenberg).author).toBe("Arthur Conan Doyle");
+
+    const split = doc([page(1, [{ text: "The Adventures of Sherlock Holmes", fontSize: 20 }, { text: "by" }, { text: "Arthur Conan Doyle" }, { text: BODY }])]);
+    expect(detectStructure(cleanDocument(split), split).author).toBe("Arthur Conan Doyle");
+  });
+});
+
+describe("cleanAuthor", () => {
+  it("keeps names and drops codes, ids and links", () => {
+    expect(cleanAuthor("Lewis Carroll; BkV0000010; BksIr0000001; ISBN<n/a>;")).toBe("Lewis Carroll");
+    expect(cleanAuthor("Jane Austen")).toBe("Jane Austen");
+    expect(cleanAuthor("Neil Gaiman; Terry Pratchett")).toBe("Neil Gaiman, Terry Pratchett");
+    expect(cleanAuthor("J.K. Rowling")).toBe("J.K. Rowling");
+    expect(cleanAuthor("Mary Shelley; Mary Shelley")).toBe("Mary Shelley");
+    expect(cleanAuthor("https://example.com; 978-0-14-143951-8")).toBeNull();
+    expect(cleanAuthor("")).toBeNull();
+    expect(cleanAuthor(null)).toBeNull();
   });
 });
 

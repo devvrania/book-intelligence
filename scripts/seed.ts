@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 
 import { checkAI, formatHealthReport } from "@/lib/ai/health";
 import { closeDb } from "@/lib/db/client";
-import { books, conversations } from "@/lib/db/schema";
+import { books } from "@/lib/db/schema";
 import { logger } from "@/lib/logger";
 import { NoopRateLimiter } from "@/lib/rate-limit";
 import { createServices } from "@/server/container";
@@ -20,8 +20,6 @@ import { buildBookPdf, parseSeedMarkdown } from "../seed/pdf-builder";
  *
  *   npm run db:seed
  */
-
-const SAMPLE_QUESTION = { book: "The Art of War", question: "What is this book mainly about?" };
 
 async function main() {
   const services = createServices({ rateLimiter: new NoopRateLimiter() });
@@ -68,8 +66,6 @@ async function main() {
     await waitUntilProcessed(services, pending);
   }
 
-  await seedSampleConversation(services);
-
   console.log(`
 ✔ Demo library ready.
 
@@ -86,28 +82,6 @@ async function waitUntilProcessed(services: ReturnType<typeof createServices>, b
     if (statuses.every((book) => book.status === "READY" || book.status === "FAILED")) return;
     if (Date.now() > deadline) throw new Error("Timed out waiting for seed books to process");
     await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-}
-
-async function seedSampleConversation(services: ReturnType<typeof createServices>) {
-  const [book] = await services.db
-    .select({ id: books.id, status: books.status })
-    .from(books)
-    .where(eq(books.title, SAMPLE_QUESTION.book))
-    .limit(1);
-  if (!book || book.status !== "READY") return;
-
-  const [existing] = await services.db
-    .select({ id: conversations.id })
-    .from(conversations)
-    .where(eq(conversations.bookId, book.id))
-    .limit(1);
-  if (existing) return;
-
-  const prepared = await services.chat.prepare({ bookId: book.id, message: SAMPLE_QUESTION.question });
-  for await (const event of services.chat.stream(prepared)) {
-    if (event.type === "error") logger.warn("seed.sample_conversation_failed", { message: event.message });
-    if (event.type === "done") logger.info("seed.sample_conversation", { sources: event.message.sources.length });
   }
 }
 

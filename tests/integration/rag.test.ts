@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { documentChunks, messageSources } from "@/lib/db/schema";
+import { conversations, documentChunks, messageSources } from "@/lib/db/schema";
 import { NO_CONTEXT_ANSWER } from "@/lib/rag/prompts";
 import type { ChatStreamEvent } from "@/types/api";
 
@@ -10,8 +10,17 @@ import { createReadyBook, createTestServices, GARDENING_BOOK } from "../helpers/
 import { FakeChatProvider } from "../helpers/fakes";
 import type { Database } from "@/lib/db/client";
 
-async function ask(ctx: ReturnType<typeof createTestServices>, bookId: string, message: string, conversationId?: string) {
-  const prepared = await ctx.services.chat.prepare({ bookId, message, conversationId });
+const VISITOR = "11111111-1111-4111-8111-111111111111";
+const OTHER_VISITOR = "22222222-2222-4222-8222-222222222222";
+
+async function ask(
+  ctx: ReturnType<typeof createTestServices>,
+  bookId: string,
+  message: string,
+  conversationId?: string,
+  visitorId = VISITOR,
+) {
+  const prepared = await ctx.services.chat.prepare({ bookId, visitorId, message, conversationId });
   const events: ChatStreamEvent[] = [];
   for await (const event of ctx.services.chat.stream(prepared)) events.push(event);
   const done = events.find((e): e is Extract<ChatStreamEvent, { type: "done" }> => e.type === "done");
@@ -100,12 +109,66 @@ describe("RAG answering", () => {
     const request = chat.requests.at(-1)!;
     expect(request.messages.some((m) => m.role === "assistant")).toBe(true);
     expect(request.messages.some((m) => m.role === "user" && m.content === "How should roses be pruned?")).toBe(true);
-    const { messages } = await ctx.services.conversations.messages(first.conversationId);
+    const { messages } = await ctx.services.conversations.messages(first.conversationId, VISITOR);
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
   it("refuses to chat with a book that isn't ready", async () => {
     const pending = await ctx.services.repositories.books.create({ title: "Pending", status: "PROCESSING" });
-    await expect(ctx.services.chat.prepare({ bookId: pending.id, message: "hi" })).rejects.toMatchObject({ code: "conflict" });
+    await expect(ctx.services.chat.prepare({ bookId: pending.id, visitorId: VISITOR, message: "hi" })).rejects.toMatchObject({ code: "conflict" });
+  });
+});
+
+describe("private chats", () => {
+  let close: () => Promise<void>;
+  let ctx: ReturnType<typeof createTestServices>;
+  let bookId: string;
+
+  beforeAll(async () => {
+    const test = await createTestDb();
+    close = test.close;
+    ctx = createTestServices(test.db, new FakeChatProvider());
+    bookId = (await createReadyBook(ctx.services, "The Gardener's Year", GARDENING_BOOK)).id;
+  });
+  afterAll(async () => close());
+
+  it("only lists a visitor's own chats", async () => {
+    const mine = await ask(ctx, bookId, "How should roses be pruned?");
+    const theirs = await ask(ctx, bookId, "When do tulips flower?", undefined, OTHER_VISITOR);
+
+    expect((await ctx.services.conversations.list(bookId, VISITOR)).map((c) => c.id)).toEqual([mine.conversationId]);
+    expect((await ctx.services.conversations.list(bookId, OTHER_VISITOR)).map((c) => c.id)).toEqual([theirs.conversationId]);
+    // a browser that hasn't asked anything yet (no visitor cookie) sees no chats
+    expect(await ctx.services.conversations.list(bookId, null)).toEqual([]);
+  });
+
+  it("hides another visitor's chat as if it didn't exist", async () => {
+    const mine = await ask(ctx, bookId, "What do roses need in winter?");
+    const notFound = { code: "not_found" };
+
+    await expect(ctx.services.conversations.messages(mine.conversationId, OTHER_VISITOR)).rejects.toMatchObject(notFound);
+    await expect(ctx.services.conversations.messages(mine.conversationId, null)).rejects.toMatchObject(notFound);
+    await expect(
+      ctx.services.chat.prepare({ bookId, visitorId: OTHER_VISITOR, message: "Me too?", conversationId: mine.conversationId }),
+    ).rejects.toMatchObject(notFound);
+    await expect(ctx.services.conversations.rename(mine.conversationId, OTHER_VISITOR, "Hijacked")).rejects.toMatchObject(notFound);
+    await expect(ctx.services.conversations.delete(mine.conversationId, OTHER_VISITOR)).rejects.toMatchObject(notFound);
+
+    // ...and the owner still has it, untouched
+    const { title, messages } = await ctx.services.conversations.messages(mine.conversationId, VISITOR);
+    expect(title).not.toBe("Hijacked");
+    expect(messages).toHaveLength(2);
+  });
+
+  it("shows old shared chats (no owner) to no one", async () => {
+    const legacy = await ctx.services.repositories.conversations.create({
+      bookId,
+      visitorId: VISITOR,
+      title: "Old shared chat",
+    });
+    await ctx.services.db.update(conversations).set({ visitorId: null }).where(eq(conversations.id, legacy.id));
+
+    expect((await ctx.services.conversations.list(bookId, VISITOR)).some((c) => c.id === legacy.id)).toBe(false);
+    await expect(ctx.services.conversations.messages(legacy.id, VISITOR)).rejects.toMatchObject({ code: "not_found" });
   });
 });

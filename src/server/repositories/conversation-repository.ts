@@ -26,7 +26,7 @@ export type MessageWithSources = Message & { sources: MessageSource[] };
 export class ConversationRepository {
   constructor(private readonly db: Database) {}
 
-  async create(values: { bookId: string; title: string }): Promise<Conversation> {
+  async create(values: { bookId: string; visitorId: string; title: string }): Promise<Conversation> {
     const [conversation] = await this.db.insert(conversations).values(values).returning();
     return conversation;
   }
@@ -36,7 +36,8 @@ export class ConversationRepository {
     return conversation ?? null;
   }
 
-  async listForBook(bookId: string, limit = 50) {
+  /** One visitor's chats about a book, newest first. */
+  async listForBook(bookId: string, visitorId: string, limit = 50) {
     return this.db
       .select({
         id: conversations.id,
@@ -46,7 +47,7 @@ export class ConversationRepository {
         messageCount: sql<number>`(select count(*)::int from ${messages} m where m.conversation_id = ${conversations.id})`,
       })
       .from(conversations)
-      .where(eq(conversations.bookId, bookId))
+      .where(and(eq(conversations.bookId, bookId), eq(conversations.visitorId, visitorId)))
       .orderBy(desc(conversations.lastMessageAt))
       .limit(limit);
   }

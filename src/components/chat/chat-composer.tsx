@@ -70,7 +70,7 @@ export function ChatComposer({ placeholder, isStreaming, onSend, onStop }: ChatC
       </div>
       {/* there are no accounts, so every conversation is visible in the shared library */}
       <p className="mt-2 text-center text-[11px] text-muted-foreground">
-        Chats are public: anyone who opens this book can read them. Answers can be imperfect, so check the sources.
+        Your chats are private to this browser. Answers can be imperfect, so check the sources.
       </p>
     </>
   );

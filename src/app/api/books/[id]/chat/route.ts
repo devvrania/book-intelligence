@@ -3,6 +3,7 @@ import { z } from "zod";
 import { logger } from "@/lib/logger";
 import { getServices } from "@/server/container";
 import { parseId, parseJson, withLibrary } from "@/server/http/handler";
+import { ensureVisitorId } from "@/server/http/visitor";
 import type { ChatStreamEvent } from "@/types/api";
 
 const chatBody = z.object({
@@ -29,9 +30,11 @@ export const POST = withLibrary(async (request, context: RouteContext<"/api/book
   const bookId = parseId((await context.params).id, "Book");
   const body = await parseJson(request, chatBody);
   const chat = getServices().chat;
+  const { visitorId, setCookie } = ensureVisitorId(request);
 
   const prepared = await chat.prepare({
     bookId,
+    visitorId,
     message: body.message,
     conversationId: body.conversationId,
     chapterId: body.chapterId,
@@ -71,6 +74,8 @@ export const POST = withLibrary(async (request, context: RouteContext<"/api/book
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
+      // the visitor id its private chats belong to: new on a first question, renewed for a year on every other
+      "Set-Cookie": setCookie,
     },
   });
 });

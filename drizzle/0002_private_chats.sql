@@ -1,0 +1,2 @@
+ALTER TABLE "conversations" ADD COLUMN "visitor_id" uuid;--> statement-breakpoint
+CREATE INDEX "conversations_book_visitor_last_message_idx" ON "conversations" USING btree ("book_id","visitor_id","last_message_at" DESC NULLS LAST);

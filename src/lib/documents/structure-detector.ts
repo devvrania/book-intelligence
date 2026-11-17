@@ -84,11 +84,49 @@ function detectTitle(clean: CleanDocument, extracted: ExtractedDocument): string
   return best && best.fontSize >= clean.bodyFontSize * 1.4 ? smartTitleCase(best.text) : null;
 }
 
+/**
+ * A clean author name from PDF metadata. Publishers sometimes pack catalogue data into the author field
+ * ("Lewis Carroll; BkV0000010; BksIr0000001; ISBN<n/a>;"): keep the name-like parts, drop codes, ids and links.
+ * Also used when showing books, so authors stored before this cleaning display correctly too.
+ */
+export function cleanAuthor(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const names = value
+    .split(/[;|\n]+/)
+    .map((part) => part.replace(/\s+/g, " ").trim().replace(/[,.]+$/, ""))
+    .filter(
+      (part) =>
+        part.length >= 2 &&
+        part.length <= 80 &&
+        /\p{L}{2}/u.test(part) && // has a word in it
+        !/\d/.test(part) && // catalogue numbers, ISBNs, dates
+        !/[<>@\\/]|https?:|\bisbn\b|\bn\/a\b/i.test(part),
+    );
+  const unique = [...new Set(names)].slice(0, 3);
+  return unique.length > 0 ? unique.join(", ") : null;
+}
+
+/** A name on a title page: 1–6 words of letters (with initials, hyphens and apostrophes). */
+const NAME_RE = /^[\p{L}][\p{L}.'’-]*(?:\s+[\p{L}][\p{L}.'’-]*){0,5}$/u;
+
 function detectAuthor(clean: CleanDocument, extracted: ExtractedDocument): string | null {
-  const fromMetadata = meaningfulMetadata(extracted.info.author);
+  const fromMetadata = cleanAuthor(meaningfulMetadata(extracted.info.author));
   if (fromMetadata && !/^(admin|administrator|user|owner|calibre|adobe|author)\b/i.test(fromMetadata)) {
     return fromMetadata;
   }
+  // Title pages: look at the PDF's own lines (the cleaner merges short neighbouring lines into one paragraph).
+  for (const page of extracted.pages.slice(0, 3)) {
+    const lines = page.lines.map((line) => line.text.replace(/\s+/g, " ").trim()).filter(Boolean);
+    for (const [i, text] of lines.entries()) {
+      // "by Lewis Carroll" / "Author: Arthur Conan Doyle" (Project Gutenberg header)
+      const inline = text.match(/^(?:by|author:)\s+(.{3,80})$/iu)?.[1]?.trim();
+      if (inline && NAME_RE.test(inline)) return smartTitleCase(inline);
+      // "by" on its own line and the name on the next
+      const next = lines[i + 1];
+      if (/^by$/i.test(text) && next && next.length <= 80 && NAME_RE.test(next)) return smartTitleCase(next);
+    }
+  }
+  // Fallback for extractions without usable lines: a block that is exactly "by Name"
   for (const page of clean.pages.slice(0, 3)) {
     for (const block of page.blocks) {
       const match = block.text.match(/^by\s+([\p{L}][\p{L}.'’\s-]{2,80})$/iu);

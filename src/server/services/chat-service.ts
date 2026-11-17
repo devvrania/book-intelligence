@@ -19,6 +19,8 @@ import type { ChatStreamEvent, ConversationSummary, SourceDTO } from "@/types/ap
 import type { MessageMetadata, MessageSelection } from "@/types/domain";
 
 import { toMessageDTO } from "./mappers";
+import { ownsConversation } from "./conversation-service";
+import { cleanAuthor } from "@/lib/documents/structure-detector";
 
 export interface ChatServiceDeps {
   books: BookRepository;
@@ -37,6 +39,8 @@ export interface ChatServiceDeps {
 
 export interface AskInput {
   bookId: string;
+  /** The anonymous visitor asking: new chats belong to them, and only their own chats can be continued. */
+  visitorId: string;
   message: string;
   conversationId?: string | null;
   chapterId?: string | null;
@@ -110,10 +114,13 @@ export class ChatService {
     let isNewConversation = false;
     if (input.conversationId) {
       conversation = await this.deps.conversations.findById(input.conversationId);
-      if (!conversation || conversation.bookId !== book.id) throw new NotFoundError("Conversation");
+      if (!ownsConversation(conversation, input.visitorId) || conversation.bookId !== book.id) {
+        throw new NotFoundError("Conversation");
+      }
     } else {
       conversation = await this.deps.conversations.create({
         bookId: book.id,
+        visitorId: input.visitorId,
         title: conversationTitle(message),
       });
       isNewConversation = true;
@@ -238,9 +245,18 @@ export class ChatService {
 
       // 3. Generate.
       yield { type: "status", stage: "generating" };
-      let done: { answer: string; cited: string[]; model: string | null; usage?: MessageMetadata["usage"]; noContext: boolean; latencyMs: number } | null = null;
+      let done: {
+        answer: string;
+        cited: string[];
+        model: string | null;
+        usage?: MessageMetadata["usage"];
+        noContext: boolean;
+        grounding: NonNullable<MessageMetadata["grounding"]>;
+        retried: boolean;
+        latencyMs: number;
+      } | null = null;
       for await (const event of this.deps.rag.stream({
-        book: { title: book.title, author: book.author },
+        book: { title: book.title, author: cleanAuthor(book.author) },
         question: message,
         resolvedQuestion,
         queryType: analysis.type,
@@ -252,6 +268,11 @@ export class ChatService {
         if (event.type === "delta") {
           answerSoFar += event.text;
           yield { type: "delta", text: event.text };
+        } else if (event.type === "reset") {
+          // The draft cited nothing: the client clears it while a stricter attempt runs.
+          answerSoFar = "";
+          yield { type: "reset" };
+          yield { type: "status", stage: "checking" };
         } else {
           done = {
             answer: event.answer,
@@ -259,6 +280,8 @@ export class ChatService {
             model: event.model,
             usage: event.usage,
             noContext: event.noContext,
+            grounding: event.grounding,
+            retried: event.retried,
             latencyMs: event.latencyMs,
           };
         }
@@ -278,6 +301,8 @@ export class ChatService {
             model: done.model ?? undefined,
             usage: done.usage,
             noContext: done.noContext,
+            grounding: done.grounding,
+            ...(done.retried ? { retried: true } : {}),
             latencyMs: { retrieval: retrievalMs, generation: done.latencyMs, total: Math.round(performance.now() - started) },
           },
         },
@@ -289,6 +314,8 @@ export class ChatService {
         sources: context.sources.length,
         cited: cited.size,
         noContext: done.noContext,
+        grounding: done.grounding,
+        retried: done.retried,
         totalMs: Math.round(performance.now() - started),
       });
       yield { type: "done", message: toMessageDTO(saved) };

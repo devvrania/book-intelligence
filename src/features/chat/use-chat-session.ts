@@ -8,7 +8,7 @@ import type { MessageDTO } from "@/types/api";
 
 import { streamChat } from "./stream";
 
-export type ChatStage = "understanding" | "retrieving" | "generating";
+export type ChatStage = "understanding" | "retrieving" | "generating" | "checking";
 
 /** A message as rendered: server messages plus local streaming state. */
 export interface ChatMessage extends MessageDTO {
@@ -139,6 +139,10 @@ export function useChatSession({
                   break;
                 case "delta":
                   patchMessage(assistantId, (message) => ({ ...message, stage: "generating", content: message.content + event.text }));
+                  break;
+                case "reset":
+                  // the draft cited nothing; a stricter attempt replaces it
+                  patchMessage(assistantId, (message) => ({ ...message, content: "", stage: "checking" }));
                   break;
                 case "done":
                   finished = true;

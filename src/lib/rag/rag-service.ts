@@ -1,11 +1,11 @@
 import type { ChatMessage, ChatProvider } from "@/lib/ai";
 import { truncate } from "@/lib/documents/text-utils";
 import { logger } from "@/lib/logger";
-import type { QueryType, TokenUsage } from "@/types/domain";
+import type { Grounding, QueryType, TokenUsage } from "@/types/domain";
 
 import { extractCitations, stripCitations, type CitationResult } from "./citation-service";
 import { sanitizeBookText, type BuiltContext } from "./context-builder";
-import { buildSystemPrompt, guidanceFor, NO_CONTEXT_ANSWER } from "./prompts";
+import { buildSystemPrompt, CITATION_REMINDER, guidanceFor, NO_CONTEXT_ANSWER, NOT_IN_BOOK_MARKER } from "./prompts";
 
 export interface AnswerInput {
   book: { title: string; author: string | null };
@@ -22,6 +22,8 @@ export interface AnswerInput {
 
 export type AnswerEvent =
   | { type: "delta"; text: string }
+  /** Discard the draft streamed so far: it cited nothing, and a stricter second attempt follows. */
+  | { type: "reset" }
   | {
       type: "done";
       answer: string;
@@ -29,8 +31,61 @@ export type AnswerEvent =
       model: string | null;
       usage?: TokenUsage;
       noContext: boolean;
+      grounding: Grounding;
+      /** The first draft cited nothing and was regenerated. */
+      retried: boolean;
       latencyMs: number;
     };
+
+/**
+ * Hides the refusal marker from a streamed answer. Text is held back only until it's clear whether the reply starts
+ * with the marker (a dozen characters at most); after that it streams straight through.
+ */
+export class RefusalMarkerFilter {
+  private pending = "";
+  private decided = false;
+  /** After a refusal marker, whitespace is dropped until the actual reply starts. */
+  private trimLeading = false;
+  refusal = false;
+
+  /** Feed a streamed piece; returns the text that can be shown now. */
+  push(text: string): string {
+    if (this.decided) return this.leading(text);
+    this.pending += text;
+    const head = this.pending.trimStart();
+    if (head.length >= NOT_IN_BOOK_MARKER.length) return this.decide(head.startsWith(NOT_IN_BOOK_MARKER));
+    if (!NOT_IN_BOOK_MARKER.startsWith(head)) return this.decide(false);
+    return ""; // could still be the start of the marker: hold on
+  }
+
+  /** End of stream: whatever is still held back. */
+  flush(): string {
+    if (this.decided) return "";
+    return this.decide(this.pending.trim() === NOT_IN_BOOK_MARKER);
+  }
+
+  private decide(refusal: boolean): string {
+    this.decided = true;
+    this.refusal = refusal;
+    this.trimLeading = refusal;
+    const out = refusal ? this.pending.trimStart().slice(NOT_IN_BOOK_MARKER.length) : this.pending;
+    this.pending = "";
+    return this.leading(out);
+  }
+
+  private leading(text: string): string {
+    if (!this.trimLeading) return text;
+    const trimmed = text.trimStart();
+    if (trimmed) this.trimLeading = false;
+    return trimmed;
+  }
+}
+
+/** The final text with any marker removed (also mid-text, where a model occasionally puts it), and whether it had one. */
+export function stripRefusalMarker(text: string): { text: string; refusal: boolean } {
+  if (!text.includes(NOT_IN_BOOK_MARKER)) return { text, refusal: false };
+  return { text: text.split(NOT_IN_BOOK_MARKER).join("").replace(/^\s+/, "").replace(/[ \t]{2,}/g, " "), refusal: true };
+}
 
 const MAX_HISTORY_MESSAGES = 6;
 const MAX_SELECTION_CHARS = 4000;
@@ -77,7 +132,13 @@ export class RAGService {
     return messages;
   }
 
-  /** Stream an answer. With no retrieved context the model is not called at all. */
+  /**
+   * Stream an answer. With no retrieved context the model is not called at all.
+   *
+   * Grounding check: an answer that cites nothing (and isn't a "not in the book" refusal) is regenerated once with a
+   * stricter reminder, after a `reset` event so the client clears the draft. If the retry still cites nothing, the
+   * answer is kept but recorded as "uncited" so the app can tell the reader to check the passages.
+   */
   async *stream(input: AnswerInput): AsyncIterable<AnswerEvent> {
     const started = performance.now();
 
@@ -89,45 +150,84 @@ export class RAGService {
         citations: { text: NO_CONTEXT_ANSWER, cited: [], invalid: [] },
         model: null,
         noContext: true,
+        grounding: "not_in_book",
+        retried: false,
         latencyMs: Math.round(performance.now() - started),
       };
       return;
     }
 
+    const labels = input.context.sources.map((source) => source.label);
+    const messages = this.buildMessages(input);
+    let attempt = yield* this.attempt(messages, input.signal, started);
+    let citations = extractCitations(attempt.text, labels);
+    let retried = false;
+
+    if (!attempt.refusal && citations.cited.length === 0 && !input.signal?.aborted) {
+      retried = true;
+      yield { type: "reset" };
+      const last = messages[messages.length - 1];
+      const stricter = [...messages.slice(0, -1), { ...last, content: `${last.content}\n\n${CITATION_REMINDER}` }];
+      attempt = yield* this.attempt(stricter, input.signal, started);
+      citations = extractCitations(attempt.text, labels);
+    }
+
+    const grounding: Grounding = attempt.refusal ? "not_in_book" : citations.cited.length > 0 ? "cited" : "uncited";
+    const latencyMs = Math.round(performance.now() - started);
+    logger.info("llm.completed", {
+      model: attempt.model,
+      latencyMs,
+      firstTokenMs: attempt.firstTokenMs,
+      promptTokens: attempt.usage?.promptTokens,
+      completionTokens: attempt.usage?.completionTokens,
+      sources: input.context.sources.length,
+      cited: citations.cited.length,
+      invalidCitations: citations.invalid.length,
+      grounding,
+      retried,
+    });
+
+    yield {
+      type: "done",
+      answer: citations.text,
+      citations,
+      model: attempt.model,
+      usage: attempt.usage,
+      noContext: false,
+      grounding,
+      retried,
+      latencyMs,
+    };
+  }
+
+  /** One generation: streams deltas (refusal marker hidden) and returns the cleaned full text. */
+  private async *attempt(
+    messages: ChatMessage[],
+    signal: AbortSignal | undefined,
+    started: number,
+  ): AsyncGenerator<AnswerEvent, { text: string; refusal: boolean; model: string | null; usage?: TokenUsage; firstTokenMs?: number }> {
+    const filter = new RefusalMarkerFilter();
     let raw = "";
     let model: string | null = this.chat.model;
     let usage: TokenUsage | undefined;
     let firstTokenMs: number | undefined;
 
-    for await (const event of this.chat.stream({
-      messages: this.buildMessages(input),
-      maxOutputTokens: this.options.maxOutputTokens,
-      signal: input.signal,
-    })) {
+    for await (const event of this.chat.stream({ messages, maxOutputTokens: this.options.maxOutputTokens, signal })) {
       if (event.type === "delta") {
         firstTokenMs ??= Math.round(performance.now() - started);
         raw += event.text;
-        yield event;
+        const visible = filter.push(event.text);
+        if (visible) yield { type: "delta", text: visible };
       } else {
         model = event.model;
         usage = event.usage;
       }
     }
+    const rest = filter.flush();
+    if (rest) yield { type: "delta", text: rest };
 
-    const citations = extractCitations(raw, input.context.sources.map((source) => source.label));
-    const latencyMs = Math.round(performance.now() - started);
-    logger.info("llm.completed", {
-      model,
-      latencyMs,
-      firstTokenMs,
-      promptTokens: usage?.promptTokens,
-      completionTokens: usage?.completionTokens,
-      sources: input.context.sources.length,
-      cited: citations.cited.length,
-      invalidCitations: citations.invalid.length,
-    });
-
-    yield { type: "done", answer: citations.text, citations, model, usage, noContext: false, latencyMs };
+    const { text, refusal } = stripRefusalMarker(raw);
+    return { text, refusal: refusal || filter.refusal, model, usage, firstTokenMs };
   }
 
   /** Non-streaming convenience wrapper. */

@@ -1,6 +1,7 @@
 import type {
   BookInsights,
   BookStatus,
+  Grounding,
   PageBlock,
   ProcessingProgress,
   ProcessingStage,
@@ -87,11 +88,14 @@ export interface MessageDTO {
   selection?: { text: string; pageNumber?: number } | null;
   queryType?: QueryType | null;
   noContext?: boolean;
+  grounding?: Grounding | null;
 }
 
 export type ChatStreamEvent =
   | { type: "conversation"; conversation: ConversationSummary; userMessage: MessageDTO }
-  | { type: "status"; stage: "understanding" | "retrieving" | "generating" }
+  | { type: "status"; stage: "understanding" | "retrieving" | "generating" | "checking" }
+  /** The draft answer streamed so far is being replaced (it cited nothing): clear it, a stricter retry follows. */
+  | { type: "reset" }
   | { type: "sources"; sources: SourceDTO[] }
   | { type: "delta"; text: string }
   | { type: "done"; message: MessageDTO }

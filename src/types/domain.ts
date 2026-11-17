@@ -89,6 +89,13 @@ export interface MessageSelection {
   pageNumber?: number;
 }
 
+/**
+ * How well an answer is backed by the book: "cited" (claims carry [S#] citations), "not_in_book" (the model said the
+ * passages don't answer the question; nothing to cite) or "uncited" (it answered without citing even after a retry,
+ * so the reader is told to check the passages).
+ */
+export type Grounding = "cited" | "not_in_book" | "uncited";
+
 export interface MessageMetadata {
   selection?: MessageSelection;
   scope?: { chapterId?: string | null };
@@ -98,6 +105,9 @@ export interface MessageMetadata {
   usage?: TokenUsage;
   latencyMs?: { retrieval?: number; generation?: number; total?: number };
   noContext?: boolean;
+  grounding?: Grounding;
+  /** True when the first draft had no citations and was regenerated with a stricter reminder. */
+  retried?: boolean;
 }
 
 /**

@@ -2,6 +2,7 @@ import type { Book, Chapter, MessageSource } from "@/lib/db/schema";
 import type { BookListRow } from "@/server/repositories/book-repository";
 import type { MessageWithSources } from "@/server/repositories/conversation-repository";
 import type { BookDetail, BookSummary, ChapterSummary, MessageDTO, SourceDTO } from "@/types/api";
+import { cleanAuthor } from "@/lib/documents/structure-detector";
 
 const iso = (date: Date | null | undefined) => (date ? date.toISOString() : null);
 
@@ -14,7 +15,8 @@ export function toBookSummary(book: BookListRow | Book): BookSummary {
   return {
     id: book.id,
     title: book.title,
-    author: book.author,
+    // cleaned on the way out too, so books processed before author cleaning display a proper name
+    author: cleanAuthor(book.author),
     coverUrl: coverUrlFor(book),
     pageCount: book.pageCount,
     chunkCount: book.chunkCount,
@@ -83,5 +85,6 @@ export function toMessageDTO(message: MessageWithSources): MessageDTO {
     selection: message.metadata?.selection ?? null,
     queryType: message.metadata?.queryType ?? null,
     noContext: message.metadata?.noContext ?? false,
+    grounding: message.metadata?.grounding ?? null,
   };
 }

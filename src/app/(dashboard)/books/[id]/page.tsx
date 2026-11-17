@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 
 import { BookWorkspace } from "@/components/books/book-workspace";
 import { isAppError } from "@/lib/errors";
 import { getServices } from "@/server/container";
+import { parseVisitorId, VISITOR_COOKIE } from "@/server/http/visitor";
 import type { BookDetail } from "@/types/api";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -34,8 +36,9 @@ export default async function BookPage(props: PageProps<"/books/[id]">) {
   const services = getServices();
   await services.books.markOpened(id);
 
-  // One shared conversation per book: open the most recent one, if anyone has asked anything yet
-  const [latest] = book.status === "READY" ? await services.conversations.list(id) : [];
+  // Chats are private: reopen this visitor's latest chat about the book, if they've asked anything yet
+  const visitorId = parseVisitorId((await cookies()).get(VISITOR_COOKIE)?.value);
+  const [latest] = book.status === "READY" ? await services.conversations.list(id, visitorId) : [];
   const conversationId = latest?.id ?? null;
   return (
     <BookWorkspace book={book} initialConversationId={conversationId} currentEmbeddingModel={services.embeddings.model} />

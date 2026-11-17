@@ -188,12 +188,22 @@ export const conversations = pgTable(
     bookId: uuid("book_id")
       .notNull()
       .references(() => books.id, { onDelete: "cascade" }),
+    /**
+     * The anonymous visitor (a random id in an HttpOnly cookie, no account) who started this chat. Chats are private:
+     * only that visitor can list, read or continue them. Null for chats from before chats were private; those are
+     * shown to no one.
+     */
+    visitorId: uuid("visitor_id"),
     title: text("title").notNull(),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("conversations_book_last_message_idx").on(t.bookId, t.lastMessageAt.desc())],
+  (t) => [
+    index("conversations_book_last_message_idx").on(t.bookId, t.lastMessageAt.desc()),
+    // "This visitor's chats about this book, newest first"
+    index("conversations_book_visitor_last_message_idx").on(t.bookId, t.visitorId, t.lastMessageAt.desc()),
+  ],
 );
 
 export const messages = pgTable(

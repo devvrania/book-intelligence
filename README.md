@@ -232,6 +232,9 @@ Run `npm run db:migrate` on every deploy (the Render config does it at start).
 - **No accounts, no personal data.** There are no user tables: the database only holds books, passages and anonymous
   chats. Anyone who can reach the app can browse, upload and chat. For a public deployment, set
   `NEXT_PUBLIC_ALLOW_BOOK_CHANGES=false` and the daily caps, as `render.yaml` does.
-- **Chats are public.** Every book has one shared conversation, visible to everyone who opens the book.
+- **Chats are private, without accounts.** The first question from a browser gives it a random visitor id in an
+  HttpOnly cookie; chats belong to that id, so nobody else can list, read or continue them. Clearing cookies starts
+  fresh. The cookie lasts a year from the visitor's last question or reopened chat, so regular visitors keep their
+  chats. Chats from before this change have no owner and are shown to no one.
 - **Copyright.** Only upload books you're allowed to share. The bundled seed texts are public domain
   (Project Gutenberg #17405 and #1342).

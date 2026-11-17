@@ -12,6 +12,7 @@ import type { BookRepository } from "@/server/repositories/book-repository";
 import type { DocumentRepository } from "@/server/repositories/document-repository";
 
 import type { InsightsService } from "./insights-service";
+import { cleanAuthor } from "@/lib/documents/structure-detector";
 
 export interface IngestionDeps {
   books: BookRepository;
@@ -78,7 +79,7 @@ export class IngestionService implements JobHandler<"ingest_book"> {
       const placeholderTitle = book.title === titleFromFilename(book.originalFilename);
       await books.update(bookId, {
         title: placeholderTitle && doc.title ? doc.title : book.title,
-        author: book.author ?? doc.author,
+        author: cleanAuthor(book.author) ?? doc.author,
         description: book.description ?? doc.description,
         pageCount: doc.pageCount,
         wordCount: doc.wordCount,
@@ -133,7 +134,7 @@ export class IngestionService implements JobHandler<"ingest_book"> {
     const text = pages.map((page) => page.content).join("\n\n");
     const { insights, description } = await this.deps.insights.generate({
       title: current.title,
-      author: current.author,
+      author: cleanAuthor(current.author),
       chapters: chapterRows,
       text,
       opening: text.slice(0, 12_000),

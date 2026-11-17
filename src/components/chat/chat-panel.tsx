@@ -9,17 +9,18 @@ import type { BookDetail, SourceDTO } from "@/types/api";
 
 import { AssistantMessage, UserMessage } from "./chat-message";
 import { ChatComposer } from "./chat-composer";
+import { ChatToolbar } from "./chat-toolbar";
 import { PassageSheet } from "./passage-sheet";
 import { SuggestedPrompts } from "./suggested-prompts";
 
 export interface ChatPanelProps {
   book: BookDetail;
-  /** The book's conversation, if it has one: every visitor continues the same thread. */
+  /** This visitor's latest chat about the book, if they've asked anything: chats are private to each browser. */
   initialConversationId?: string | null;
   className?: string;
 }
 
-/** Ask the book: one shared conversation per book, answers with citations you can open. */
+/** Ask the book: this visitor's private chats about it, answers with citations you can open. */
 export function ChatPanel({ book, initialConversationId = null, className }: ChatPanelProps) {
   const [openSource, setOpenSource] = useState<SourceDTO | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -52,6 +53,16 @@ export function ChatPanel({ book, initialConversationId = null, className }: Cha
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
+      <ChatToolbar
+        bookId={book.id}
+        activeId={session.conversationId}
+        hasMessages={session.messages.length > 0}
+        disabled={session.isStreaming}
+        onSelect={(id) => {
+          stickToBottom.current = true;
+          session.selectConversation(id);
+        }}
+      />
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-8">
           {session.isLoadingHistory ? (
